@@ -27,6 +27,10 @@
 import os
 import subprocess
 from .codegen import *
+AMDGPU_LAYOUT_NCHW      = (0 << 0)
+AMDGPU_LAYOUT_NHWC      = (1 << 0)
+AMDGPU_LAYOUT_CNHW      = (2 << 0)
+AMDGPU_LAYOUT_CHWN      = (3 << 0)
 AMDGPU_PRECISION_FP32   = (0 << 20)
 AMDGPU_PRECISION_FP16   = (1 << 20)
 AMDGPU_PRECISION_BF16   = (2 << 20)
@@ -35,6 +39,28 @@ AMDGPU_ARCH_GFX906      = (1 << 24)
 AMDGPU_ARCH_GFX908      = (2 << 24)
 AMDGPU_CODEOBJECT_V2    = (0 << 28)
 AMDGPU_CODEOBJECT_V3    = (1 << 28)
+
+def amdgpu_string_to_layout(amdgpu_layout_string):
+    if amdgpu_layout_string == 'nchw':
+        return AMDGPU_LAYOUT_NCHW
+    if amdgpu_layout_string == 'nhwc':
+        return AMDGPU_LAYOUT_NHWC
+    if amdgpu_layout_string == 'cnhw':
+        return AMDGPU_LAYOUT_CNHW
+    if amdgpu_layout_string == 'chwn':
+        return AMDGPU_LAYOUT_CHWN
+    assert False
+
+def amdgpu_layout_to_string(amdgpu_layout):
+    if amdgpu_layout == AMDGPU_LAYOUT_NCHW:
+        return 'nchw'
+    if amdgpu_layout == AMDGPU_LAYOUT_NHWC:
+        return 'nhwc'
+    if amdgpu_layout == AMDGPU_LAYOUT_CNHW:
+        return 'cnhw'
+    if amdgpu_layout == AMDGPU_LAYOUT_CHWN:
+        return 'chwn'
+    assert False
 
 def amdgpu_string_to_arch(amdgpu_arch_string):
     if amdgpu_arch_string == 'gfx900':
@@ -181,6 +207,7 @@ class amdgpu_arch_config_t(object):
         self.use_xdlops     = ad('use_sdlops', False)
         self.data_type      = ad('data_type', AMDGPU_PRECISION_FP32)
         self.code_object    = ad('code_object', AMDGPU_CODEOBJECT_V3)
+        self.layout         = ad('layout', AMDGPU_LAYOUT_NCHW)
 
 class amdgpu_kernel_code_t(object):
     '''

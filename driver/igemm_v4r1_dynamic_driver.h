@@ -166,7 +166,7 @@ class igemm_v4r1_dynamic_driver_t {
   public:
     igemm_v4r1_dynamic_driver_t() {}
     ~igemm_v4r1_dynamic_driver_t() {}
-    std::string get_kernel_name(const igemm_v4r1_dynamic_tunable_t *tunable) {
+    std::string get_kernel_name(const igemm_v4r1_dynamic_tunable_t *tunable, const char * layout = NULL) {
         int b_per_block = tunable->b_per_block;
         int k_per_block = tunable->k_per_block;
         int e_per_block = tunable->e_per_block;
@@ -199,9 +199,14 @@ class igemm_v4r1_dynamic_driver_t {
         int thread_tile_m = gemm_m_repeat * gemm_m_per_thread_subc;
         int thread_tile_n = gemm_n_repeat * gemm_n_per_thread_subc;
 
-
-
         std::string kernel_prefix = tunable->OPT_1x1 ? std::string("igemm_v4r1_1x1_dynamic_") : std::string("igemm_v4r1_dynamic_");
+        if(layout){
+            std::string layout_str(layout);
+            if(layout_str != "nchw"){
+                kernel_prefix += layout_str;
+                kernel_prefix += "_";
+            }
+        }
 
         return kernel_prefix +
                std::to_string(k_per_block) + "x" +
@@ -394,7 +399,7 @@ class igemm_v4r1_dynamic_driver_t {
         return true;
     }
 
-    result_t run(const args_t *arg, const igemm_v4r1_dynamic_tunable_t *tunable,
+    result_t run(const args_t *arg, const igemm_v4r1_dynamic_tunable_t *tunable, const char * layout,
                  hipModule_t module, float *p_in, float *p_wei, float *p_out,
                  int warmup, int repeat) {
         if (!tunable_is_valid(arg, tunable)) {
@@ -437,8 +442,8 @@ class igemm_v4r1_dynamic_driver_t {
         int grid_size = get_grid_size(arg, tunable);
 
         hipFunction_t kernel_func;
-        std::string kernel_name = get_kernel_name(tunable);
-        //printf("kernel:%s\n", kernel_name.c_str());
+        std::string kernel_name = get_kernel_name(tunable, layout);
+        // printf("kernel:%s in:%p, wei:%p, out:%p\n", kernel_name.c_str(), p_in, p_wei, p_out);
         HIP_CALL(
             hipModuleGetFunction(&kernel_func, module, kernel_name.c_str()));
         gpu_timer_t timer(NULL);

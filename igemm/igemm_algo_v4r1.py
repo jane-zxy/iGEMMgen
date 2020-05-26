@@ -395,19 +395,28 @@ class emit_in_move_slice_window_t(igemm_v4r1_dynamic_t):
     move input slice window. unified for all tunable along e=c*y*x
     '''
     def name(self):
+        if self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+            return '.v_in_move_slice_window_nhwc'
         return '.v_in_move_slice_window'
     def __init__(self, mc, tunable):
         igemm_v4r1_dynamic_t.__init__(self, mc, tunable)
     def __call__(self, v_in_os, v_in_ic, v_in_iy, v_in_ix, v_in_ihi, v_in_iwi, v_flag,
                         s_hi, s_wi, s_y, s_x, s_in_stride_c, s_dilation_h, s_dilation_w, s_in_ic, s_in_iy, s_in_ix,
                         v_idc, v_idy, v_idx, s_tmp2):
+        assert self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW or self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC
         return '{} {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}'.format(self.name(),
                         v_in_os, v_in_ic, v_in_iy, v_in_ix, v_in_ihi, v_in_iwi, v_flag,
                         s_hi, s_wi, s_y, s_x, s_in_stride_c, s_dilation_h, s_dilation_w, s_in_ic, s_in_iy, s_in_ix,
                         v_idc, v_idy, v_idx, s_tmp2)
     def emit(self):
         self._emit_macro_desc('\n; update v_in_os, v_flag, update v_in_ic, v_in_iy, v_in_ix (zero or possitive), v_in_ihi, v_in_iwi (negative, zero, possitive)')
-        with self._emit_macro_indented('.macro {} v_in_os, v_in_ic, v_in_iy, v_in_ix, v_in_ihi, v_in_iwi, v_flag, s_hi, s_wi, s_y, s_x, s_in_stride_c, s_dilation_h, s_dilation_w, s_in_ic, s_in_iy, s_in_ix, v_idc, v_idy, v_idx, s_tmp2'.format(self.name())):
+        if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+            args = 'v_in_os, v_in_ic, v_in_iy, v_in_ix, v_in_ihi, v_in_iwi, v_flag, s_hi, s_wi, s_y, s_x, s_in_stride_c, s_dilation_h, s_dilation_w, s_in_ic, s_in_iy, s_in_ix, v_idc, v_idy, v_idx, s_tmp2'
+        elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+            args = 'v_in_os, v_in_ic, v_in_iy, v_in_ix, v_in_ihi, v_in_iwi, v_flag, s_hi, s_wi, s_y, s_x, s_c, s_dilation_h, s_dilation_w, s_in_ic, s_in_iy, s_in_ix, v_idc, v_idy, v_idx, s_tmp2'
+        else:
+            assert False
+        with self._emit_macro_indented('.macro {} {}'.format(self.name(), args)):
             self._emit('; record old ic, iy, ix')
             self._emit('v_mov_b32 v[\\v_idx], v[\\v_in_ix]')
             self._emit('v_mov_b32 v[\\v_idy], v[\\v_in_iy]')
@@ -435,19 +444,40 @@ class emit_in_move_slice_window_t(igemm_v4r1_dynamic_t):
             self._emit('v_add_u32 v[\\v_in_ic], s[\\s_in_ic], v[\\v_in_ic]')
             self._emit('v_sub_u32 v[\\v_idc], v[\\v_in_ic], v[\\v_idc]')
             self._emit_empty_line()
-            self._emit('; calculate offset: idc*(s_hi*s_wi) + idy*s_dilation_h*s_wi + idx*s_dilation_w')
-            self._emit('; we use i24 as multiplier, for 24bit(-8388607 ~ 8388608) is enough for index')
-            self._emit('; also, update ihi, iwi here')
-            self._emit('v_mul_i32_i24 v[\\v_idy], s[\\s_dilation_h], v[\\v_idy]')
-            self._emit('v_mul_i32_i24 v[\\v_idx], s[\\s_dilation_w], v[\\v_idx]')
-            self._emit('v_add_i32 v[\\v_in_ihi], v[\\v_idy], v[\\v_in_ihi]')
-            self._emit('v_add_i32 v[\\v_in_iwi], v[\\v_idx], v[\\v_in_iwi]')
-            self._emit('v_mul_i32_i24 v[\\v_idy], s[\\s_wi], v[\\v_idy]')
-            self._emit_empty_line()
-            self._emit('v_add_i32 v[\\v_idx], v[\\v_idx], v[\\v_idy]')
-            self._emit('v_mul_lo_u32 v[\\v_idc], s[\\s_in_stride_c], v[\\v_idc]')
-            self._emit('v_add_i32 v[\\v_idc], v[\\v_idc], v[\\v_idx]')
-            self._emit('v_lshl_add_u32 v[\\v_in_os], v[\\v_idc], 2, v[\\v_in_os]   ; indeed, v_idc here must be possitive')
+            if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+                self._emit('; calculate offset: idc*(s_hi*s_wi) + idy*s_dilation_h*s_wi + idx*s_dilation_w')
+                self._emit('; we use i24 as multiplier, for 24bit(-8388607 ~ 8388608) is enough for index')
+                self._emit('; also, update ihi, iwi here')
+                self._emit('v_mul_i32_i24 v[\\v_idy], s[\\s_dilation_h], v[\\v_idy]')
+                self._emit('v_mul_i32_i24 v[\\v_idx], s[\\s_dilation_w], v[\\v_idx]')
+                self._emit('v_add_i32 v[\\v_in_ihi], v[\\v_idy], v[\\v_in_ihi]')
+                self._emit('v_add_i32 v[\\v_in_iwi], v[\\v_idx], v[\\v_in_iwi]')
+                self._emit('v_mul_i32_i24 v[\\v_idy], s[\\s_wi], v[\\v_idy]')
+                self._emit_empty_line()
+                self._emit('v_add_i32 v[\\v_idx], v[\\v_idx], v[\\v_idy]')
+                self._emit('v_mul_lo_u32 v[\\v_idc], s[\\s_in_stride_c], v[\\v_idc]')
+                self._emit('v_add_i32 v[\\v_idc], v[\\v_idc], v[\\v_idx]')
+                self._emit('v_lshl_add_u32 v[\\v_in_os], v[\\v_idc], 2, v[\\v_in_os]   ; indeed, v_idc here must be possitive')
+            elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+                self._emit('; calculate offset: idc + idy*s_dilation_h*s_wi*s_c + idx*s_dilation_w*s_c')
+                self._emit('; we use i24 as multiplier, for 24bit(-8388607 ~ 8388608) is enough for index')
+                self._emit('; also, update ihi, iwi here')
+                self._emit('v_mul_i32_i24 v[\\v_idy], s[\\s_dilation_h], v[\\v_idy]')
+                self._emit('v_mul_i32_i24 v[\\v_idx], s[\\s_dilation_w], v[\\v_idx]')
+                self._emit('v_add_i32 v[\\v_in_ihi], v[\\v_idy], v[\\v_in_ihi]')
+                self._emit('v_add_i32 v[\\v_in_iwi], v[\\v_idx], v[\\v_in_iwi]')
+                self._emit('v_mul_i32_i24 v[\\v_idy], s[\\s_wi], v[\\v_idy]')
+                self._emit_empty_line()
+                self._emit('v_add_i32 v[\\v_idx], v[\\v_idx], v[\\v_idy]')
+                self._emit('v_mul_i32_i24 v[\\v_idx], s[\\s_c], v[\\v_idx]')
+                self._emit('v_add_i32 v[\\v_idc], v[\\v_idc], v[\\v_idx]')
+                #self._emit('v_mul_i32_i24 v[\\v_idc], 4, v[\\v_idc]')   # CAUTION!!!!!! not enough bits
+                self._emit('v_add_i32 v[\\v_in_os], v[\\v_idc], v[\\v_in_os]')
+                self._emit('v_add_i32 v[\\v_in_os], v[\\v_idc], v[\\v_in_os]')
+                self._emit('v_add_i32 v[\\v_in_os], v[\\v_idc], v[\\v_in_os]')
+                self._emit('v_add_i32 v[\\v_in_os], v[\\v_idc], v[\\v_in_os]')
+            else:
+                assert False
             self._emit_empty_line()
             self._emit('; update v_flag')
             self._emit('.v_in_set_flag \\v_flag, \\v_in_ihi, \\v_in_iwi, \\s_hi, \\s_wi, \\s_tmp2')
@@ -470,6 +500,13 @@ class emit_wei_move_slice_window_t(igemm_v4r1_dynamic_t):
     def emit(self):
         self._emit_macro_desc('\n; update v_wei_os, update v_wei_ic, v_wei_iy, v_wei_ix (zero or possitive)')
         with self._emit_macro_indented('.macro {} v_wei_os, v_wei_ic, v_wei_iy, v_wei_ix, s_y, s_x, s_wei_stride_c, s_wei_ic, s_wei_iy, s_wei_ix, v_idc, v_idy, v_idx, s_tmp2'.format(self.name())):
+            # self._emit('s_mul_i32 s[\\s_tmp2], s[\\s_y], s[\\s_x]')
+            # self._emit('s_mul_i32 s[\\s_tmp2], s[\\s_tmp2], s[\\s_wei_ic]')
+            # self._emit('s_mul_i32 s[\\s_tmp2+1], s[\\s_x], s[\\s_wei_iy]')
+            # self._emit('s_add_u32 s[\\s_tmp2+1], s[\\s_tmp2+1], s[\\s_wei_ix]')
+            # self._emit('s_add_u32 s[\\s_tmp2+1], s[\\s_tmp2+1], s[\\s_tmp2]')
+            # self._emit('v_lshl_add_u32 v[\\v_wei_os], s[\\s_tmp2+1], 2, v[\\v_wei_os]  ; indeed, idc here must be possitive')
+
             self._emit('; record old ic, iy, ix')
             self._emit('v_mov_b32 v[\\v_idx], v[\\v_wei_ix]')
             self._emit('v_mov_b32 v[\\v_idy], v[\\v_wei_iy]')
@@ -710,7 +747,7 @@ class emit_v4r1_dynamic_kernel_t(igemm_v4r1_dynamic_t):
             self._emit(code) 
 
     def name(self):
-        return igemm_encode_v4r1_kernel_name(self.tunable)
+        return igemm_encode_v4r1_kernel_name(self.tunable, self.mc.arch_config)
     def __init__(self, mc, tunable):
         igemm_v4r1_dynamic_t.__init__(self, mc, tunable)
         self.kernel_karg = self.kernel_karg_t(mc, tunable)
@@ -889,21 +926,42 @@ class emit_v4r1_dynamic_kernel_t(igemm_v4r1_dynamic_t):
         self._emit('s_waitcnt lgkmcnt(0)')
         self._emit_empty_line()
         self._emit('; calculate index')
-        self._emit('s_mul_i32 s[s_out_stride_k1], s[s_ho], s[s_wo]')
-        self._emit('s_lshl_b32 s[s_out_stride_k0], s[s_out_stride_k1], {}'.format(
-                                                        igemm_log2(self.tunable.gemm_m_per_thread_subc)+
-                                                        igemm_log2(self.tunable.gemm_m_level0_cluster)+
-                                                        igemm_log2(self.tunable.gemm_m_level1_cluster)) )
-        self._emit('s_mul_i32 s[s_out_stride_n2], s[s_k], s[s_out_stride_k1]')
-        self._emit('s_lshl_b32 s[s_out_stride_n1], s[s_out_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
-        
-        if self.tunable.is_1x1():
-            self._emit_empty_line()
+        if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+            self._emit('s_mul_i32 s[s_out_stride_k1], s[s_ho], s[s_wo]')
+            self._emit('s_lshl_b32 s[s_out_stride_k0], s[s_out_stride_k1], {}'.format(
+                                                            igemm_log2(self.tunable.gemm_m_per_thread_subc)+
+                                                            igemm_log2(self.tunable.gemm_m_level0_cluster)+
+                                                            igemm_log2(self.tunable.gemm_m_level1_cluster)) )
+            self._emit('s_mul_i32 s[s_out_stride_n2], s[s_k], s[s_out_stride_k1]')
+            self._emit('s_lshl_b32 s[s_out_stride_n1], s[s_out_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+            
+            if self.tunable.is_1x1():
+                self._emit_empty_line()
+            else:
+                self._emit('s_mul_i32 s[s_in_stride_c], s[s_hi], s[s_wi]')
+                self._emit('s_mul_i32 s[s_in_stride_n2], s[s_c], s[s_in_stride_c]')
+                self._emit('s_mul_i32 s[s_wei_stride_c], s[s_y], s[s_x]')
+                self._emit('s_mul_i32 s[s_wei_stride_k], s[s_c], s[s_wei_stride_c]')
+        elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+            self._emit('s_mov_b32 s[s_out_stride_k1], 1')
+            self._emit('s_lshl_b32 s[s_out_stride_k0], s[s_out_stride_k1], {}'.format(
+                                                            igemm_log2(self.tunable.gemm_m_per_thread_subc)+
+                                                            igemm_log2(self.tunable.gemm_m_level0_cluster)+
+                                                            igemm_log2(self.tunable.gemm_m_level1_cluster)) )
+            self._emit('s_mul_i32 s[s_tmp], s[s_ho], s[s_wo]')
+            self._emit('s_mul_i32 s[s_out_stride_n2], s[s_k], s[s_tmp]')
+            self._emit('s_lshl_b32 s[s_out_stride_n1], s[s_out_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+            
+            if self.tunable.is_1x1():
+                self._emit_empty_line()
+            else:
+                #self._emit('s_mov_b32 s[s_in_stride_c], 1')
+                self._emit('s_mul_i32 s[s_tmp], s[s_hi], s[s_wi]')
+                self._emit('s_mul_i32 s[s_in_stride_n2], s[s_c], s[s_tmp]')
+                self._emit('s_mul_i32 s[s_wei_stride_c], s[s_y], s[s_x]')
+                self._emit('s_mul_i32 s[s_wei_stride_k], s[s_c], s[s_wei_stride_c]')
         else:
-            self._emit('s_mul_i32 s[s_in_stride_c], s[s_hi], s[s_wi]')
-            self._emit('s_mul_i32 s[s_in_stride_n2], s[s_c], s[s_in_stride_c]')
-            self._emit('s_mul_i32 s[s_wei_stride_c], s[s_y], s[s_x]')
-            self._emit('s_mul_i32 s[s_wei_stride_k], s[s_c], s[s_wei_stride_c]')
+            assert False, 'unknown layout:{}'.format(elf.mc.arch_config.layout)
 
         self._emit('s_mov_b64 s[s_p_buf_wei:s_p_buf_wei+1], s[s_p_wei:s_p_wei+1]')
         self._emit('s_mov_b32 s[s_p_buf_in+2], 0xffffffff')
@@ -916,7 +974,13 @@ class emit_v4r1_dynamic_kernel_t(igemm_v4r1_dynamic_t):
         self._emit('s_lshr_b32 s[s_tmp], s[s_n], {}'.format(
                             igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
         # B = N0 * Ho * Wo')
-        self._emit('s_mul_i32 s[s_tmp+1], s[s_out_stride_k1], s[s_tmp]')
+        if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+            self._emit('s_mul_i32 s[s_tmp+1], s[s_out_stride_k1], s[s_tmp]')
+        elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+            self._emit('s_mul_i32 s[s_tmp+2], s[s_ho], s[s_wo]')
+            self._emit('s_mul_i32 s[s_tmp+1], s[s_tmp+2], s[s_tmp]')
+        else:
+            assert False
         # BBlockWork = B / BPerBlock')
         self._emit('s_lshr_b32 s[0], s[s_tmp+1], {}'.format(igemm_log2(self.tunable.b_per_block)) )
         # KBlockID, BBlockID')
@@ -959,8 +1023,15 @@ class emit_v4r1_dynamic_kernel_t(igemm_v4r1_dynamic_t):
         self._emit('; calculate input transform')
         self._emit('; e_n1_b_n2:b, transform: b -> n0*ho*wo')
         self._emit('v_add_u32 v[v_tmp+4], s[s_block_ib], v[v_in_ib]')
-        self._emit('.v_u32_div_vs v_in_in0, v_tmp+4, s_out_stride_k1, v_tmp, s_tmp')
-        self._emit('v_mul_lo_u32 v[v_tmp], s[s_out_stride_k1], v[v_in_in0]')
+        if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+            self._emit('.v_u32_div_vs v_in_in0, v_tmp+4, s_out_stride_k1, v_tmp, s_tmp')
+            self._emit('v_mul_lo_u32 v[v_tmp], s[s_out_stride_k1], v[v_in_in0]')
+        elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+            self._emit('s_mul_i32 s0, s[s_ho], s[s_wo]')
+            self._emit('.v_u32_div_vs v_in_in0, v_tmp+4, 0, v_tmp, s_tmp')
+            self._emit('v_mul_lo_u32 v[v_tmp], s[0], v[v_in_in0]')
+        else:
+            assert False
         self._emit('v_sub_u32 v[v_tmp+4], v[v_tmp+4], v[v_tmp]')
         self._emit('.v_u32_div_vs v_in_iho, v_tmp+4, s_wo, v_tmp, s_tmp')
         self._emit('v_mul_lo_u32 v[v_tmp], s[s_wo], v[v_in_iho]')
@@ -1009,41 +1080,70 @@ class emit_v4r1_dynamic_kernel_t(igemm_v4r1_dynamic_t):
         self._emit_empty_line()
 
         self._emit('; in offset: from ihi, iwi, ic, in, calculate v_in_os')
-        if self.tunable.is_1x1():
-            self._emit('v_mul_lo_u32 v[v_in_os], s[s_wi], v[v_in_iho]')
-            self._emit('s_mul_i32 s[s_tmp+1], s[s_wi], s[s_hi]')
-            self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_in_iwo]')
-            self._emit('s_lshl_b32 s[s_in_stride], s[s_tmp+1], {}+2'.format(igemm_log2(self.tunable.e_per_block)))
-            self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in0], {}, v[v_in_in2]'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
-            self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in1], {}, v[v_tmp+1]'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
-            self._emit('s_mul_i32 s[s_in_stride_n2], s[s_tmp+1], s[s_c]')
-            self._emit('v_mul_lo_u32 v[v_tmp], s[s_in_stride_n2], v[v_tmp+1]')
-            self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_tmp]')
-            self._emit(';   v_in_os: offset, v_flag: is valid')
+        if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+            if self.tunable.is_1x1():
+                self._emit('v_mul_lo_u32 v[v_in_os], s[s_wi], v[v_in_iho]')
+                self._emit('s_mul_i32 s[s_tmp+1], s[s_wi], s[s_hi]')
+                self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_in_iwo]')
+                self._emit('s_lshl_b32 s[s_in_stride], s[s_tmp+1], {}+2'.format(igemm_log2(self.tunable.e_per_block)))
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in0], {}, v[v_in_in2]'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in1], {}, v[v_tmp+1]'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('s_mul_i32 s[s_in_stride_n2], s[s_tmp+1], s[s_c]')
+                self._emit('v_mul_lo_u32 v[v_tmp], s[s_in_stride_n2], v[v_tmp+1]')
+                self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_tmp]')
+                self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_tmp+1], v[v_in_ie]')
+                self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_tmp+1]')
+                self._emit_empty_line()
+                self._emit('s_lshl_b32 s[s_in_stride_n2], s[s_in_stride_n2], 2')
+                self._emit('v_lshlrev_b32 v[v_in_os], 2, v[v_in_os]')
+                self._emit('s_lshl_b32 s[s_in_stride_n1], s[s_in_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
 
-            self._emit('; 2. e_n1_b_n2:e')
-            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_tmp+1], v[v_in_ie]')
-            self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_tmp+1]')
+            else:
+                self._emit('v_mul_lo_u32 v[v_tmp], s[s_wi], v[v_in_ihi]')
+                self._emit('v_add_u32 v[v_tmp], v[v_tmp], v[v_in_iwi]')
+                self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_in_stride_c], v[v_in_ic]')
+                self._emit('v_add_u32 v[v_tmp], v[v_tmp], v[v_tmp+1]')
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in0], {}, v[v_in_in2]'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in1], {}, v[v_tmp+1]'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_in_stride_n2], v[v_tmp+1]')
+                self._emit('v_add_lshl_u32 v[v_in_os], v[v_tmp], v[v_tmp+1], 2')
+                self._emit_empty_line()
+                self._emit('s_lshl_b32 s[s_in_stride_n2], s[s_in_stride_n2], 2')
+                self._emit('s_lshl_b32 s[s_in_stride_n1], s[s_in_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
 
-            self._emit_empty_line()
+        elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+            if self.tunable.is_1x1():
+                self._emit('v_mul_lo_u32 v[v_in_os], s[s_wi], v[v_in_iho]')
+                self._emit('s_mul_i32 s[s_tmp+1], s[s_wi], s[s_hi]')
+                self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_in_iwo]')
+                self._emit('v_mul_lo_u32 v[v_in_os], s[s_c], v[v_in_os]')
+                self._emit('s_lshl_b32 s[s_in_stride], 1, {}+2'.format(igemm_log2(self.tunable.e_per_block)))
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in0], {}, v[v_in_in2]'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in1], {}, v[v_tmp+1]'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('s_mul_i32 s[s_in_stride_n2], s[s_tmp+1], s[s_c]')
+                self._emit('v_mul_lo_u32 v[v_tmp], s[s_in_stride_n2], v[v_tmp+1]')
+                self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_tmp]')
+                self._emit('v_add_u32 v[v_in_os], v[v_in_os], v[v_in_ie]')
+                self._emit_empty_line()
+                self._emit('s_lshl_b32 s[s_in_stride_n2], s[s_in_stride_n2], 2')
+                self._emit('v_lshlrev_b32 v[v_in_os], 2, v[v_in_os]')
+                self._emit('s_lshl_b32 s[s_in_stride_n1], s[s_in_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
 
-            self._emit('; in_offset, diff')
-            self._emit('s_lshl_b32 s[s_in_stride_n2], s[s_in_stride_n2], 2')
-            self._emit('v_lshlrev_b32 v[v_in_os], 2, v[v_in_os]')
-            self._emit('s_lshl_b32 s[s_in_stride_n1], s[s_in_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+            else:
+                self._emit('v_mul_lo_u32 v[v_tmp], s[s_wi], v[v_in_ihi]')
+                self._emit('v_add_u32 v[v_tmp], v[v_tmp], v[v_in_iwi]')
+                self._emit('v_mul_lo_u32 v[v_tmp], s[s_c], v[v_tmp]')
+                self._emit('v_add_u32 v[v_tmp], v[v_tmp], v[v_in_ic]')
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in0], {}, v[v_in_in2]'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in1], {}, v[v_tmp+1]'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+                self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_in_stride_n2], v[v_tmp+1]')
+                self._emit('v_add_lshl_u32 v[v_in_os], v[v_tmp], v[v_tmp+1], 2')
+                self._emit_empty_line()
+                self._emit('s_lshl_b32 s[s_in_stride_n2], s[s_in_stride_n2], 2')
+                self._emit('s_lshl_b32 s[s_in_stride_n1], s[s_in_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
 
         else:
-            self._emit('v_mul_lo_u32 v[v_tmp], s[s_wi], v[v_in_ihi]')
-            self._emit('v_add_u32 v[v_tmp], v[v_tmp], v[v_in_iwi]')
-            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_in_stride_c], v[v_in_ic]')
-            self._emit('v_add_u32 v[v_tmp], v[v_tmp], v[v_tmp+1]')
-            self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in0], {}, v[v_in_in2]'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
-            self._emit('v_lshl_add_u32 v[v_tmp+1], v[v_in_in1], {}, v[v_tmp+1]'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
-            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_in_stride_n2], v[v_tmp+1]')
-            self._emit('v_add_lshl_u32 v[v_in_os], v[v_tmp], v[v_tmp+1], 2')
-            self._emit_empty_line()
-            self._emit('s_lshl_b32 s[s_in_stride_n2], s[s_in_stride_n2], 2')
-            self._emit('s_lshl_b32 s[s_in_stride_n1], s[s_in_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+            assert False
 
         #; load input from global
         self._emit('; load input from global')
@@ -1155,30 +1255,59 @@ class emit_v4r1_dynamic_kernel_t(igemm_v4r1_dynamic_t):
         self._emit('v_and_b32 v[v_out_ik1], {}, v[v_tmp]'.format((self.tunable.gemm_m_per_thread_subc * self.tunable.gemm_m_level0_cluster * self.tunable.gemm_m_level1_cluster) - 1))
         self._emit_empty_line()
         # b_thread_data_on_global = b_block_data_on_global + c_thread_mtx_on_block.col / N2
-        self._emit('v_add_u32 v[v_out_ib], s[s_block_ib], v[v_gemm_in]')
-        self._emit('.v_u32_div_vs v_tmp+4, v_out_ib, s_out_stride_k1, v_tmp, s_tmp')
-        self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_out_stride_k1], v[v_tmp+4]')
-        self._emit('v_sub_u32 v[v_tmp+5], v[v_out_ib], v[v_tmp+1]')
-        self._emit('.v_u32_div_vs v_tmp+6, v_tmp+5, s_wo, v_tmp, s_tmp')
-        self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_wo], v[v_tmp+6]')
-        self._emit('v_sub_u32 v[v_tmp+5], v[v_tmp+5], v[v_tmp+1]')
-        self._emit('; v_tmp+4:n0, v_tmp+6:ho, v_tmp+5:wo')
-        self._emit_empty_line()
-        self._emit('v_mul_lo_u32 v[v_tmp], s[s_wo], v[v_tmp+6]')
-        self._emit('s_mul_i32 s[s_tmp], s[s_k], s[s_out_stride_k1]')
-        self._emit('v_add_u32 v[v_out_os], v[v_tmp], v[v_tmp+5]')
-        self._emit('s_lshl_b32 s[s_tmp+1], s[s_tmp], {}'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
-        self._emit('v_mul_lo_u32 v[v_tmp], s[s_tmp+1], v[v_tmp+4]')
-        self._emit('v_add_u32 v[v_out_os], v[v_out_os], v[v_tmp]')
-        self._emit_empty_line()
-        self._emit('s_lshl_b32 s[s_out_stride_k0], s[s_out_stride_k0], 2')
-        self._emit('v_lshl_or_b32 v[v_tmp], v[v_out_ik0], {}, v[v_out_ik1]'.format(igemm_log2(self.tunable.gemm_m_per_thread_subc) + igemm_log2(self.tunable.gemm_m_level0_cluster) + igemm_log2(self.tunable.gemm_m_level1_cluster)))
-        self._emit('s_lshl_b32 s[s_out_stride_n1], s[s_out_stride_n1], 2')
-        self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_out_stride_k1], v[v_tmp]')
-        self._emit('s_lshl_b32 s[s_out_stride_n2], s[s_out_stride_n2], 2')
-        self._emit('v_add_u32 v[v_out_os], v[v_out_os], v[v_tmp+1]')
-        self._emit('s_lshl_b32 s[s_out_stride_k1], s[s_out_stride_k1], 2')
-        self._emit('v_lshlrev_b32 v[v_out_os], 2, v[v_out_os]')
+        if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+            self._emit('v_add_u32 v[v_out_ib], s[s_block_ib], v[v_gemm_in]')
+            self._emit('.v_u32_div_vs v_tmp+4, v_out_ib, s_out_stride_k1, v_tmp, s_tmp')
+            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_out_stride_k1], v[v_tmp+4]')
+            self._emit('v_sub_u32 v[v_tmp+5], v[v_out_ib], v[v_tmp+1]')
+            self._emit('.v_u32_div_vs v_tmp+6, v_tmp+5, s_wo, v_tmp, s_tmp')
+            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_wo], v[v_tmp+6]')
+            self._emit('v_sub_u32 v[v_tmp+5], v[v_tmp+5], v[v_tmp+1]')
+            self._emit('; v_tmp+4:n0, v_tmp+6:ho, v_tmp+5:wo')
+            self._emit_empty_line()
+            self._emit('v_mul_lo_u32 v[v_tmp], s[s_wo], v[v_tmp+6]')
+            self._emit('s_mul_i32 s[s_tmp], s[s_k], s[s_out_stride_k1]')
+            self._emit('v_add_u32 v[v_out_os], v[v_tmp], v[v_tmp+5]')
+            self._emit('s_lshl_b32 s[s_tmp+1], s[s_tmp], {}'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+            self._emit('v_mul_lo_u32 v[v_tmp], s[s_tmp+1], v[v_tmp+4]')
+            self._emit('v_add_u32 v[v_out_os], v[v_out_os], v[v_tmp]')
+            self._emit_empty_line()
+            self._emit('s_lshl_b32 s[s_out_stride_k0], s[s_out_stride_k0], 2')
+            self._emit('v_lshl_or_b32 v[v_tmp], v[v_out_ik0], {}, v[v_out_ik1]'.format(igemm_log2(self.tunable.gemm_m_per_thread_subc) + igemm_log2(self.tunable.gemm_m_level0_cluster) + igemm_log2(self.tunable.gemm_m_level1_cluster)))
+            self._emit('s_lshl_b32 s[s_out_stride_n1], s[s_out_stride_n1], 2')
+            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_out_stride_k1], v[v_tmp]')
+            self._emit('s_lshl_b32 s[s_out_stride_n2], s[s_out_stride_n2], 2')
+            self._emit('v_add_u32 v[v_out_os], v[v_out_os], v[v_tmp+1]')
+            self._emit('s_lshl_b32 s[s_out_stride_k1], s[s_out_stride_k1], 2')
+            self._emit('v_lshlrev_b32 v[v_out_os], 2, v[v_out_os]')
+        elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+            self._emit('v_add_u32 v[v_out_ib], s[s_block_ib], v[v_gemm_in]')
+            self._emit('s_mul_i32 s0, s[s_ho], s[s_wo]')
+            self._emit('.v_u32_div_vs v_tmp+4, v_out_ib, 0, v_tmp, s_tmp')
+            self._emit('v_mul_lo_u32 v[v_tmp+1], s[0], v[v_tmp+4]')
+            self._emit('v_sub_u32 v[v_tmp+5], v[v_out_ib], v[v_tmp+1]')
+            self._emit('.v_u32_div_vs v_tmp+6, v_tmp+5, s_wo, v_tmp, s_tmp')
+            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_wo], v[v_tmp+6]')
+            self._emit('v_sub_u32 v[v_tmp+5], v[v_tmp+5], v[v_tmp+1]')
+            self._emit('; v_tmp+4:n0, v_tmp+6:ho, v_tmp+5:wo')
+            self._emit_empty_line()
+            self._emit('v_mul_lo_u32 v[v_tmp], s[s_wo], v[v_tmp+6]')
+            self._emit('v_add_u32 v[v_out_os], v[v_tmp], v[v_tmp+5]')
+            self._emit('v_mul_lo_u32 v[v_out_os], s[s_k], v[v_out_os]')
+            self._emit('s_lshl_b32 s[s_tmp+1], s[s_out_stride_n2], {}'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
+            self._emit('v_mul_lo_u32 v[v_tmp], s[s_tmp+1], v[v_tmp+4]')
+            self._emit('v_add_u32 v[v_out_os], v[v_out_os], v[v_tmp]')
+            self._emit_empty_line()
+            self._emit('s_lshl_b32 s[s_out_stride_k0], s[s_out_stride_k0], 2')
+            self._emit('v_lshl_or_b32 v[v_tmp], v[v_out_ik0], {}, v[v_out_ik1]'.format(igemm_log2(self.tunable.gemm_m_per_thread_subc) + igemm_log2(self.tunable.gemm_m_level0_cluster) + igemm_log2(self.tunable.gemm_m_level1_cluster)))
+            self._emit('s_lshl_b32 s[s_out_stride_n1], s[s_out_stride_n1], 2')
+            self._emit('v_mul_lo_u32 v[v_tmp+1], s[s_out_stride_k1], v[v_tmp]')
+            self._emit('s_lshl_b32 s[s_out_stride_n2], s[s_out_stride_n2], 2')
+            self._emit('v_add_u32 v[v_out_os], v[v_out_os], v[v_tmp+1]')
+            self._emit('s_lshl_b32 s[s_out_stride_k1], s[s_out_stride_k1], 2')
+            self._emit('v_lshlrev_b32 v[v_out_os], 2, v[v_out_os]')
+        else:
+            assert False
         self._emit_empty_line()
         self._emit('; in lds offset block e_n1_b_n2')
         self._emit('v_lshlrev_b32 v[v_tmp], {}, v[v_in_ie]'.format(igemm_log2(self.tunable.gemm_n_repeat) + igemm_log2(self.tunable.b_per_block) + igemm_log2(self.tunable.gemm_n_per_thread_subc)))
@@ -1275,8 +1404,14 @@ class emit_v4r1_dynamic_kernel_t(igemm_v4r1_dynamic_t):
                 self._emit('s_add_u32 s[s_p_buf_wei], s[s_p_buf_wei], s[s_wei_stride]')
                 self._emit('s_addc_u32 s[s_p_buf_wei+1], s[s_p_buf_wei+1], 0')
             else:
-                self._emit(in_move_slice_window('v_in_os', 'v_in_ic', 'v_in_iy', 'v_in_ix', 'v_in_ihi', 'v_in_iwi', 'v_flag',
+                if self.mc.arch_config.layout == AMDGPU_LAYOUT_NCHW:
+                    self._emit(in_move_slice_window('v_in_os', 'v_in_ic', 'v_in_iy', 'v_in_ix', 'v_in_ihi', 'v_in_iwi', 'v_flag',
                             's_hi', 's_wi', 's_y', 's_x', 's_in_stride_c', 's_dilation_h', 's_dilation_w', 's_in_ic', 's_in_iy', 's_in_ix', 'v_idc', 'v_idy', 'v_idx', 's_tmp'))
+                elif self.mc.arch_config.layout == AMDGPU_LAYOUT_NHWC:
+                    self._emit(in_move_slice_window('v_in_os', 'v_in_ic', 'v_in_iy', 'v_in_ix', 'v_in_ihi', 'v_in_iwi', 'v_flag',
+                            's_hi', 's_wi', 's_y', 's_x', 's_c', 's_dilation_h', 's_dilation_w', 's_in_ic', 's_in_iy', 's_in_ix', 'v_idc', 'v_idy', 'v_idx', 's_tmp'))
+                else:
+                    assert False
                 self._emit(wei_move_slice_window('v_wei_os', 'v_wei_ic', 'v_wei_iy', 'v_wei_ix',
                             's_y', 's_x', 's_wei_stride_c', 's_wei_ic', 's_wei_iy', 's_wei_ix', 'v_idc', 'v_idy', 'v_idx', 's_tmp'))
 

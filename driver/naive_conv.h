@@ -109,6 +109,47 @@ static inline void naive_conv_fwd_cnhw(const float *src, const float *filter,
         }
     }
 }
+static inline void naive_conv_fwd_nhwc(const float *src, const float *filter,
+                                       float *dst, size_t n, size_t w, size_t h,
+                                       size_t c, size_t k, size_t fx, size_t fy,
+                                       size_t px, size_t py, size_t sx,
+                                       size_t sy, size_t dx, size_t dy) {
+    size_t in, ik, ioh, iow, ic, is, ir;
+    size_t cur_h, cur_w, o_idx, i_idx, f_idx;
+    size_t oh = naive_conv_out_size(h, py, dy, fy, sy);
+    size_t ow = naive_conv_out_size(w, px, dx, fx, sx);
+
+    for (in = 0; in < n; in++) {
+        for (ioh = 0; ioh < oh; ioh++) {
+            for (iow = 0; iow < ow; iow++) {
+                for (ik = 0; ik < k; ik++) {
+                    // sliding window for this filter
+                    float value = .0f;
+                    o_idx = in * oh * ow * k + ioh * ow * k + iow * k + ik;
+                    for (ic = 0; ic < c; ic++) {
+                        for (ir = 0; ir < fy; ir++) {
+                            cur_h = sy * ioh - py + dy * ir;
+                            if (cur_h < 0 || cur_h >= h)
+                                continue;
+                            for (is = 0; is < fx; is++) {
+                                cur_w = sx * iow - px + dx * is;
+                                if (cur_w < 0 || cur_w >= w)
+                                    continue;
+                                i_idx = in * h * w * c + cur_h * w * c +
+                                        cur_w * c + ic;
+                                f_idx = ik * c * fy * fx + ic * fy * fx +
+                                        ir * fx + is;
+                                value += src[i_idx] * filter[f_idx];
+                            }
+                        }
+                    }
+                    dst[o_idx] = value;
+                    // prsize_tf("o)idx:%d, value:%f\n",o_idx, value);
+                }
+            }
+        }
+    }
+}
 static inline void naive_conv_bwd_d_nchw(float *src_grad, const float *filter,
                                          const float *dst_grad, size_t n,
                                          size_t w, size_t h, size_t c, size_t k,

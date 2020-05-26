@@ -286,7 +286,16 @@ int main(int argc, char **argv) {
     int ho = conv_out_size(hi, pad_h, dilation_h, y, stride_h);
     int wo = conv_out_size(wi, pad_w, dilation_w, x, stride_w);
 
-    
+    std::string layout = "nchw";
+    for (const auto &sec : content) {
+        if (sec.get_name() == "codegen") {
+            if(sec.count("layout")){
+                layout = sec.at("layout").get_string();
+                break;
+            }
+        }
+    }
+
     // init host side
     float *host_input = (float *)malloc(n * c * hi * wi * sizeof(float));
     float *host_weight = (float *)malloc(k * c * y * x * sizeof(float));
@@ -315,9 +324,20 @@ int main(int argc, char **argv) {
 
         // TODO: other direction
         // TODO: This is slow. try mkl_conv.h
-        naive_conv_fwd_nchw(host_input, host_weight, host_output, n, wi, hi, c,
+        if(layout == "nchw"){
+            naive_conv_fwd_nchw(host_input, host_weight, host_output, n, wi, hi, c,
                             k, x, y, pad_w, pad_h, stride_w, stride_h,
                             dilation_h, dilation_w);
+        }
+        else if (layout == "nhwc" ){
+            naive_conv_fwd_nhwc(host_input, host_weight, host_output, n, wi, hi, c,
+                            k, x, y, pad_w, pad_h, stride_w, stride_h,
+                            dilation_h, dilation_w);
+        }
+        else{
+            printf("layout:[%s]\n",layout.c_str());
+            assert(0 && "not supported layout verify");
+        }
     }
 
     float *device_input;
@@ -355,12 +375,12 @@ int main(int argc, char **argv) {
                     continue;
                 }
             }
-            printf("  %s, ", conv_driver.get_kernel_name(tunable).c_str());
+            printf("  %s, ", conv_driver.get_kernel_name(tunable, layout.c_str()).c_str());
             if (need_verify)
                 HIP_CALL(hipMemset(device_output, 0,
                                    n * k * ho * wo * sizeof(float)));
             result_t result =
-                conv_driver.run(&conv_args, tunable, module, device_input,
+                conv_driver.run(&conv_args, tunable, layout.c_str(), module, device_input,
                                 device_weight, device_output, warmup, repeat);
             if (result.return_code != 0)
                 continue;

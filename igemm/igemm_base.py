@@ -206,7 +206,7 @@ class igemm_tunable_parameter_t(object):
                             self.wei_block_copy_cluster_lengths_e,
                             self.wei_block_copy_cluster_lengths_k)
 
-def igemm_encode_v4r1_kernel_name(tunable):
+def igemm_encode_v4r1_kernel_name(tunable, arch_config=None):
     if type(tunable) is igemm_tunable_parameter_t:
         tunable_dict = tunable.to_dict()
     else:
@@ -239,6 +239,10 @@ def igemm_encode_v4r1_kernel_name(tunable):
         name_prefix = 'igemm_v4r1_1x1_dynamic_'
     else:
         name_prefix = 'igemm_v4r1_dynamic_'
+
+    if arch_config:
+        if arch_config.layout != AMDGPU_LAYOUT_NCHW:
+            name_prefix += amdgpu_layout_to_string(arch_config.layout) + '_'
 
     return name_prefix + '{}x{}x{}_{}x{}_{}x{}x{}x{}x{}x{}_{}x{}x{}x{}_{}x{}'.format(
                 k_per_block, b_per_block*gemm_n_repeat*gemm_n_per_thread_subc, e_per_block, 
